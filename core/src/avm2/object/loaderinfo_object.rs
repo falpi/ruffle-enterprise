@@ -273,7 +273,17 @@ impl<'gc> LoaderInfoObject<'gc> {
 
         let content = loader.child_by_index(0);
 
-        if content.is_some() {
+        // A listener of the content's removal events (or of the "unload" event)
+        // may call `Loader.unload` again before the content is actually removed.
+        // Ignore such nested calls, as otherwise they would dispatch the events
+        // again and recurse infinitely.
+        if content.is_some_and(|child| child.being_removed_by_avm2()) {
+            return;
+        }
+
+        if let Some(child) = content {
+            child.set_being_removed_by_avm2(true);
+
             let unload_evt = EventObject::bare_default_event(context, "unload");
             Avm2::dispatch_event(context, unload_evt, self.into());
         }
@@ -292,6 +302,7 @@ impl<'gc> LoaderInfoObject<'gc> {
         // Remove the Loader's content element if it exists.
         if let Some(child) = content {
             loader.remove_child(context, child);
+            child.set_being_removed_by_avm2(false);
         }
     }
 }

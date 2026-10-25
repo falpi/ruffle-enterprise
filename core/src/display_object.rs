@@ -3160,9 +3160,10 @@ bitflags! {
         const MANUAL_FRAME_CONSTRUCT  = 1 << 16;
 
         /// Whether this object is being removed by `removeChild`,
-        /// `removeChildAt` or `removeChildren`, which dispatch its removal
-        /// events before removing it. Removing it again with these methods in
-        /// the meantime throws an error.
+        /// `removeChildAt`, `removeChildren` or `Loader.unload`, which dispatch
+        /// its removal events before removing it. Removing it again with the
+        /// `removeChild` methods in the meantime throws an error, while nested
+        /// `Loader.unload` calls are ignored.
         const BEING_REMOVED_BY_AVM2   = 1 << 17;
     }
 }
