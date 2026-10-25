@@ -41,7 +41,7 @@ Use this fork if:
 * You run Flash applications built with **Adobe Flex 4.6 SDK** in a production / enterprise context.
 * Your SWF processes **XML datasets of tens to hundreds of thousands of E4X nodes** and you observe memory pressure or out-of-memory failures on the standard builds.
 * You need native APIs that upstream does not implement or implements only partially (streaming `URLStream`, an XLSX/CSV export utility, complete E4X change-notification events).
-* You see specific glitches on MX/Spark components — hairline grid separators, mouse hover on buttons, click release semantics, `scrollRect` hit-testing — that block production use.
+* You see specific glitches on MX/Spark components — hairline grid separators, mouse hover on buttons, click release semantics, missing tooltip shadows — that block production use.
 * You ship a SWF inside an **Electron** wrapper and hit `WebAssembly.instantiateStreaming` failures.
 * You are evaluating **wasm64** as a way to lift the 4 GiB linear-memory ceiling for very large sessions.
 
@@ -68,11 +68,12 @@ All general documentation — usage, prerequisites, contributing, project struct
 To **consume** an already-produced release, check out its release tag rather than a branch:
 
 ```shell
-git checkout <release-tag>-wasm32         # the wasm32 release tag; -wasm64 for the Memory64 build
+git tag -l 'enterprise-wasm32-*'          # list the wasm32 releases; 'enterprise-wasm64-*' for Memory64
+git checkout <release-tag>
 cargo run --release --package=ruffle_desktop
 ```
 
-Release tags are immutable and reproducibly point at the exact commit that was validated for that release; unlike branches, they are not rewritten by future rebuilds. (The exact release-tag naming standard is not yet fixed.)
+Release tags are immutable and reproducibly point at the exact commit that was validated for that release; unlike branches, they are not rewritten by future rebuilds. See [Release tags](#release-tags) for the naming scheme.
 
 To **produce** a new release build yourself (which is the way to get the latest enterprise patch-set applied to the current upstream tip), see [Building a release](#building-a-release) below.
 
@@ -107,12 +108,26 @@ Release builds are produced by rebuilding the local, ephemeral `local/merge-wasm
     * chains `local/merge-wasm64` on top of the wasm32 tip by resetting it to wasm32 and merging `add-wasm64-target` (from the same source as the other branches).
     By construction, `git diff local/merge-wasm32 local/merge-wasm64` equals the wasm64 feature patch.
 3. Test the resulting builds (desktop and/or web for wasm32; web with a Memory64-capable browser for wasm64).
-4. If validated, tag each release tip with an annotated release tag and push the tags. The release-tag naming standard is not yet fixed — substitute your chosen scheme for `<release-tag>`:
+4. If validated, tag each release tip with an annotated release tag (see [Release tags](#release-tags)) and push the tags:
     ```shell
-    git tag -a <release-tag>-wasm32 -m "..."
-    git tag -a <release-tag>-wasm64 -m "..."
-    git push origin <release-tag>-wasm32 <release-tag>-wasm64
+    git tag -a enterprise-wasm32-<x.y.z>+ruffle-<a.b.c>-<yyyymmdd> local/merge-wasm32 -m "..."
+    git tag -a enterprise-wasm64-<x.y.z>+ruffle-<a.b.c>-<yyyymmdd> local/merge-wasm64 -m "..."
+    git push origin enterprise-wasm32-<...> enterprise-wasm64-<...>
     ```
+    Pushing a tag also publishes the merge commit it points at and all its parents, so the ephemeral integration branch itself can be discarded afterwards.
+
+### Release tags
+
+Release tags follow the scheme `enterprise-<target>-x.y.z+ruffle-a.b.c-yyyymmdd`, for example `enterprise-wasm32-1.1.0+ruffle-0.7.1-20261025`:
+
+* `enterprise-` is the namespace prefix, separating fork releases from the tags inherited from upstream (`v*`, `nightly-*`).
+* `<target>` is `wasm32` or `wasm64`. It is part of the prefix rather than a semver pre-release suffix, because the two builds are parallel variants of the same release, not a sequence.
+* `x.y.z` is the fork's own semantic version and the only precedence key: bump at least the patch number on every release.
+* `+ruffle-a.b.c-yyyymmdd` is semver build metadata (ignored for precedence): the upstream Ruffle version the release is based on, and the date of the `snapshot-<tag>` whose inputs it was built from.
+
+The annotated tag message records what the name does not capture, typically the upstream `master` commit and the release notes.
+
+The matching self-hosted web package is distributed as `ruffle-enterprise-<x.y.z>-web-selfhosted-<target>.zip`, containing the contents of `web/packages/selfhosted/dist` at its root.
 
 ### Freezing and rebuilding a snapshot
 
@@ -174,7 +189,7 @@ The integration branches (`local/merge-wasm32` and `local/merge-wasm64`) are **n
 | [`tile-memory-allocator`](../../tree/tile-memory-allocator) | [#24000](https://github.com/ruffle-rs/ruffle/pull/24000) (closed — retained here) | Size-class slab allocator (`tilemalloc`) for the small-object churn typical of heavy E4X workloads. Intrusive free lists, O(1) alloc/dealloc, built-in diagnostic instrument suite (waste tracking, request-size histogram, peak alive tiles, realloc counters). Empirical 2–3× speed-up on 100 k-row XML loads and unlocks 250 k-row scenarios. Closed upstream as too specific, retained here for production use. See [`docs/tile-memory-allocator.html`](docs/tile-memory-allocator.html). |
 | [`xml-general-improvements`](../../tree/xml-general-improvements) | _(fork-only)_ | Layered E4X record shrinks: `E4XNodeKind::Element` boxed payload, `children` field as `SmallVec<[_; 1]>` with single-child inline collapse, `namespaces` field as lazy `Option<Box<Vec>>`, string interning for values and namespaces on parse. Drops per-node footprint for leaf-dominated XML trees by ≈30% with no API change. See [`docs/xml-general-improvements.html`](docs/xml-general-improvements.html). |
 | [`xml-readonly-improvements`](../../tree/xml-readonly-improvements) | _(fork-only)_ | New `XMLReadOnly` built-in type with arena-backed storage and O(1) chunk tracing. Provides full E4X query parity (`..`, `@`, `for each`, indexing, `length()`, text accessors) plus a native `sortKeyed()` fast-path for row-oriented datasets. Node record reduced from 36 B → 28 B with single-child inline collapse: ≈33% memory reduction on a 250 k-row reference workload. See [`docs/xml-readonly-improvements.html`](docs/xml-readonly-improvements.html). |
-| [`xml-notifications-completion`](../../tree/xml-notifications-completion) | [#24131](https://github.com/ruffle-rs/ruffle/pull/24131) (open) | Completes the E4X change-notification surface: `textSet`, `nodeAdded`, `nodeRemoved`, `namespaceAdded`, `namespaceRemoved` events that are missing upstream. Without them, Flex property binding on E4X-derived structures silently ignores certain mutations, which is the root cause of long-standing "the panel doesn't refresh" symptoms in enterprise applications. See [`docs/xml-notifications-completion.html`](docs/xml-notifications-completion.html). |
+| [`xml-notifications-completion`](../../tree/xml-notifications-completion) | [#24131](https://github.com/ruffle-rs/ruffle/pull/24131) (open) | Completes the E4X change-notification surface: upstream only emits `attributeAdded`, `attributeChanged` and `nameSet`; this branch adds `nodeAdded`, `nodeChanged`, `nodeRemoved`, `textSet`, `attributeRemoved`, `namespaceAdded`, `namespaceRemoved` and `namespaceSet`. Without them, Flex property binding on E4X-derived structures silently ignores certain mutations, which is the root cause of long-standing "the panel doesn't refresh" symptoms in enterprise applications. See [`docs/xml-notifications-completion.html`](docs/xml-notifications-completion.html). |
 
 ### Native AS3 APIs
 
@@ -182,6 +197,7 @@ The integration branches (`local/merge-wasm32` and `local/merge-wasm64`) are **n
 | --- | --- | --- |
 | [`add-export-instruments`](../../tree/add-export-instruments) | _(fork-only)_ | Native `ExportUtils` built-in providing streaming XLSX / CSV export from AS3, sized for enterprise recordsets. Streaming ZIP with on-the-fly deflate keeps peak memory O(1) per row, so 1 M-row exports do not push the wasm32 4 GiB ceiling. Automatic per-column type detection (numeric / date / string) with correct XLSX cell formatting. Sync (`syncExport`) and async-chunked (`asyncExport*`) variants; a companion `FlexUtils.exportGridToExcel` wrapper drives an `ActiveProgress` popup on Flex `DataGrid` sources. See [`docs/add-export-instruments.html`](docs/add-export-instruments.html). |
 | [`add-urlstream-implementation`](../../tree/add-urlstream-implementation) | [#24078](https://github.com/ruffle-rs/ruffle/pull/24078) (open) | Streaming implementation of `flash.net.URLStream`. Chunks are exposed to AS3 through `IDataInput` as they arrive over the wire instead of being buffered whole, enabling efficient consumption of large SOAP / binary recordset responses from long-lived enterprise sessions. Unifies the underlying transport with `URLLoader`. |
+| [`add-urlstream-improvements`](../../tree/add-urlstream-improvements) | _(fork-only)_ | Stacked on `add-urlstream-implementation`. `URLStream` delivers the body of non-2xx HTTP responses instead of discarding it: the stream completes normally (`open` / `httpStatus` / `progress` / `complete`) and `httpStatus` reports the code, so consumers handle every response that carries a body in one place. Genuine network failures still dispatch `ioError`; other fetch consumers are unaffected. Deliberately diverges from Flash Player / AIR (which fire `ioError` on HTTP error statuses), hence fork-only. This is the URLStream branch merged into release builds. |
 | [`add-font-text-engine-implementation`](../../tree/add-font-text-engine-implementation) | [#24153](https://github.com/ruffle-rs/ruffle/pull/24153) (open) | Implements the Flash Text Engine (`flash.text.engine`) on top of upstream's native `TextBlock` object: real line breaking driven by the core layout engine, real glyph metrics, `TextLine` chains, and content invalidation. Provides the low-level text substrate the Text Layout Framework (TLF) — and therefore Spark text components — builds on. See [`docs/add-font-text-engine-implementation.html`](docs/add-font-text-engine-implementation.html). |
 
 ### MX/Spark rendering & input fixes
@@ -190,7 +206,6 @@ The integration branches (`local/merge-wasm32` and `local/merge-wasm64`) are **n
 | --- | --- | --- |
 | [`fix-blurry-grid-separators`](../../tree/fix-blurry-grid-separators) | [#23837](https://github.com/ruffle-rs/ruffle/pull/23837) (open) | `lineStyle` 1 px orthogonal strokes are snapped to the pixel grid, fixing the blurry hairline separators rendered by `mx.controls.DataGrid` and similar Flex chrome. Closes upstream issue [#23814](https://github.com/ruffle-rs/ruffle/issues/23814). See [`docs/fix-blurry-grid-separators.html`](docs/fix-blurry-grid-separators.html). |
 | [`fix-bitmapdata-filter-expansion`](../../tree/fix-bitmapdata-filter-expansion) | [#24136](https://github.com/ruffle-rs/ruffle/pull/24136) (open) | Native implementation of `BitmapData.generateFilterRect` (AVM1 + AVM2) together with dest-rectangle expansion in the wgpu `applyFilter` path. Root cause of the missing shadow on Flex `mx.controls.ToolTip` (halo `ToolTipBorder`, also under the Spark 4.6 theme): the stub returned `sourceRect` unchanged, so `mx.graphics.RectangularDropShadow` computed zero-thickness shadow slices and drew nothing. Same failure mode affects `DownloadProgressBar` / `SparkDownloadProgressBar` preloader shadows. A shared `Filter::calculate_dest_margins` helper keeps `generateFilterRect` and `applyFilter` margins consistent. See [`docs/fix-bitmapdata-filter-expansion.html`](docs/fix-bitmapdata-filter-expansion.html). |
-| [`fix-mouse-events-clipping`](../../tree/fix-mouse-events-clipping) | [#23797](https://github.com/ruffle-rs/ruffle/pull/23797) (open) | Mouse hit-testing now respects `scrollRect` when picking AVM1/AVM2 children. Previously, children clipped out of view by `scrollRect` (typical of `VGroup` / `HGroup` with `clipAndEnableScrolling`) remained clickable. Closes upstream issue [#23678](https://github.com/ruffle-rs/ruffle/issues/23678). |
 | [`fix-mouse-click-release-outside-buttons`](../../tree/fix-mouse-click-release-outside-buttons) | [#23803](https://github.com/ruffle-rs/ruffle/pull/23803) (open) | AVM2 no longer fires a spurious `click` when the mouse is released outside a pressed button. The structural equality fallback used by AVM1 (`check_display_object_equality`) was being incorrectly applied to AVM2, where dynamically-created objects all share depth = 0 and id = 0. Closes upstream issue [#23798](https://github.com/ruffle-rs/ruffle/issues/23798). |
 | [`fix-mouse-hover-on-mx-buttons`](../../tree/fix-mouse-hover-on-mx-buttons) | [#23807](https://github.com/ruffle-rs/ruffle/pull/23807) (open) | Drag operations no longer double-dispatch `rollOver` / `rollOut` to the pressed object in AVM2. Fixes `mx.controls.Button` jumping to the `UP` skin state during outside-drag and failing to restore `DOWN` on re-entry. Closes upstream issue [#23801](https://github.com/ruffle-rs/ruffle/issues/23801). |
 | [`add-text-input-event-dispatch`](../../tree/add-text-input-event-dispatch) | [#24151](https://github.com/ruffle-rs/ruffle/pull/24151) (open) | Dispatches `TextEvent.TEXT_INPUT` to focused AVM2 objects that are not native `EditText` — which is what enables keyboard entry in TLF-based Spark `TextInput` / `TextArea`. Previously only native text fields received the event, so Spark inputs silently swallowed typing. See [`docs/add-text-input-event-dispatch.html`](docs/add-text-input-event-dispatch.html). |
@@ -199,8 +214,7 @@ The integration branches (`local/merge-wasm32` and `local/merge-wasm64`) are **n
 
 | Branch | Upstream PR | Summary |
 | --- | --- | --- |
-| [`fix-arcgis-flex-sdk-too-much-recursion`](../../tree/fix-arcgis-flex-sdk-too-much-recursion) | [#23355](https://github.com/ruffle-rs/ruffle/pull/23355) (open) | Reentrancy guard on the AVM2 `removed` / `removedFromStage` event dispatch. When an AS3 listener responds to the removal event by calling `removeChild` again on the same subtree, the recursive invocation re-enters the same dispatch and overflows the stack. A `BEING_REMOVED` flag on the display object is set at dispatch entry and cleared at exit, so the recursive call bails out immediately — matching Flash Player behaviour. Closes upstream issue [#22860](https://github.com/ruffle-rs/ruffle/issues/22860) (encountered while running the ArcGIS Flex SDK). |
-| [`fix-collator-compare-normalization`](../../tree/fix-collator-compare-normalization) | [#24148](https://github.com/ruffle-rs/ruffle/pull/24148) (open) | Normalizes `flash.globalization.Collator.compare` to return exactly `-1` / `0` / `1`. Flex's `Sort.findItem` switches on the exact returned value for its binary search, so any other magnitude drove the Spark `DataGrid` sort into an infinite loop. |
+| [`fix-arcgis-flex-sdk-too-much-recursion`](../../tree/fix-arcgis-flex-sdk-too-much-recursion) | [#23355](https://github.com/ruffle-rs/ruffle/pull/23355) (closed — superseded in part by [#24977](https://github.com/ruffle-rs/ruffle/pull/24977)) | Completes upstream's re-entrant removal guard for `Loader.unload`. #24977 marks a child with `BEING_REMOVED_BY_AVM2` while `removeChild` / `removeChildAt` / `removeChildren` dispatch its removal events, but `Loader.unload` removes its content through the core directly, so a `removed` listener that calls `Loader.unload` again (as the ArcGIS Flex SDK's `ImageLoader` does) still recursed until the stack overflowed. The branch sets the same flag while `LoaderInfoObject::unload` dispatches `unload` and removes the content, and ignores nested `Loader.unload` calls. Issue [#22860](https://github.com/ruffle-rs/ruffle/issues/22860) was closed by #24977; a reopen has been requested. |
 | [`fix-electron-instantiate-streaming`](../../tree/fix-electron-instantiate-streaming) | [#23984](https://github.com/ruffle-rs/ruffle/pull/23984) (closed) | Detects Node-like environments and falls back to `WebAssembly.instantiate` from an `ArrayBuffer` instead of `instantiateStreaming`. Required since `wasm-bindgen` 0.2.120+ dispatches a `Response` object that Electron renderers with `nodeIntegration = true` reject. Relevant for SWFs shipped inside Electron-based desktop wrappers. |
 
 ### Experimental targets and subsystems
@@ -217,7 +231,7 @@ The integration branches (`local/merge-wasm32` and `local/merge-wasm64`) are **n
 * **`ruffle-enterprise`** carries only fork-only meta assets (this README, `scripts/`, `docs/`) as a thin linear layer above `master`. When `master` advances, it is rebased on the new tip and force-pushed. It contains no functional code changes and does not feed into the integration branch.
 * Each `fix-*`, `add-*` and single-feature branch is rebased on top of `master` and intended to be submittable as a self-contained PR. The upstream PR number, where one exists, is listed in the tables above and is the authoritative description of the patch.
 * The `local/merge-wasm32` / `local/merge-wasm64` integration branches are **local, ephemeral build artefacts**: rebuilt fresh from `master + feature branches` on every run of the merge script, and intentionally never pushed to the remote. The base branch `ruffle-enterprise` is kept out of that chain so the integration stays a pure "master + features" tree. They are not intended to be submitted upstream.
-* **Releases are published as tags**, not as branches. A release tag points at the validated tip of the corresponding integration branch (the exact naming standard is not yet fixed); it is immutable and is the correct reference for anyone wanting to check out a specific release build. Point-in-time input sets are additionally frozen under the immutable `snapshot-<tag>/*` namespace.
+* **Releases are published as tags**, not as branches. A release tag (`enterprise-<target>-x.y.z+ruffle-a.b.c-yyyymmdd`, see [Release tags](#release-tags)) points at the validated tip of the corresponding integration branch; it is immutable and is the correct reference for anyone wanting to check out a specific release build. Point-in-time input sets are additionally frozen under the immutable `snapshot-<tag>/*` namespace.
 * **Issues filed on this repository should concern this fork** — Flex enterprise workloads, the patches listed above, or release packaging. For upstream bugs unrelated to this scope, please file them on [ruffle-rs/ruffle/issues](https://github.com/ruffle-rs/ruffle/issues).
 
 

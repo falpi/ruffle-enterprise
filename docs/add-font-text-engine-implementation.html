@@ -111,6 +111,30 @@
   </div>
 </header>
 
+<div class="note warn">
+  <span class="lbl">Document status</span>
+  This document describes the <strong>first proposal</strong> of the branch (July 2026) and is intentionally not
+  kept in sync. Upstream keeps implementing parts of <code>flash.text.engine</code>, and every rebase adapts the
+  branch to the new upstream infrastructure while keeping its composition engine. The design explained here —
+  reusing the core layout engine, the baseline origin, the line chain — still holds; for the current state refer to
+  the branch itself and to <a href="https://github.com/ruffle-rs/ruffle/pull/24153">PR #24153</a>.
+  Main differences as of October 2026:
+  <ul>
+    <li>The line chain uses upstream's native accessors (<code>nextLine</code>, <code>previousLine</code>,
+      <code>textBlockBeginIndex</code>, <code>rawTextLength</code>) instead of the AS3 slots described in §4, and
+      upstream's native <code>releaseLines</code> is kept.</li>
+    <li>Line breaking lives in upstream's entry point <code>do_create_text_line</code>;
+      <code>break_text_line</code> and <code>invalidate_all_lines</code> no longer exist.</li>
+    <li><code>LineMetrics</code> has five fields: the typographic ascent/descent reported to ActionScript, the cell
+      ascent/descent of the backing field (used by <code>fallback_offset</code> to place the glyphs), and
+      <code>text_width</code>.</li>
+    <li><code>lower_from_text_spans</code> takes upstream's <code>LayoutParams</code>; <code>justify_final_line</code>
+      is one of its fields rather than a separate argument.</li>
+    <li>Upstream made <code>ascent</code>, <code>descent</code> and <code>hasTabs</code> native: the branch keeps its
+      own metrics for the first two and adopts upstream's <code>hasTabs</code>.</li>
+  </ul>
+</div>
+
 <nav class="toc" aria-label="Contents">
   <strong>Contents</strong>
   <ol>

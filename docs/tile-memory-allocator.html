@@ -545,7 +545,7 @@ window.tilemallocTrim()    // reclaim empty extents; returns bytes released</cod
   <tbody>
     <tr><td><code>totalMemoryNumber</code></td><td><code>linear_memory − heap_base</code></td><td>dynamic heap obtained (Number; no 4&nbsp;GiB cap)</td></tr>
     <tr><td><code>totalMemory</code></td><td><code>totalMemoryNumber as uint</code></td><td>same value, legacy <code>uint</code> API</td></tr>
-    <tr><td><code>freeMemory</code></td><td><code>totalMemoryNumber − (live_tile_bytes + fallback_live_bytes)</code></td><td>allocated-but-unused heap; rises after <code>System.gc()</code></td></tr>
+    <tr><td><code>freeMemory</code></td><td><code>totalMemoryNumber − (total_tile_alive_bytes() + fallback.bytes_alive)</code></td><td>allocated-but-unused heap; rises after <code>System.gc()</code></td></tr>
     <tr><td><code>privateMemory</code></td><td><code>linear_memory</code></td><td>whole linear memory incl. boot cost</td></tr>
   </tbody>
 </table>
