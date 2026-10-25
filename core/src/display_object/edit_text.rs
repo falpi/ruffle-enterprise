@@ -1,8 +1,8 @@
 //! `EditText` display object and support code.
 
 use crate::avm1::{
-    Activation as Avm1Activation, ActivationIdentifier, Avm1, ExecutionReason,
-    NativeObject as Avm1NativeObject, Object as Avm1Object, Value as Avm1Value,
+    Activation as Avm1Activation, ActivationIdentifier, ArrayBuilder, Attribute, Avm1,
+    ExecutionReason, NativeObject as Avm1NativeObject, Object as Avm1Object,
 };
 use crate::avm2::object::{
     ClassObject as Avm2ClassObject, EventObject as Avm2EventObject, StageObject as Avm2StageObject,
@@ -45,7 +45,6 @@ use ruffle_render::transform::Transform;
 use ruffle_wstr::WStrToUtf8;
 use std::cell::{Cell, Ref, RefCell, RefMut};
 use std::collections::VecDeque;
-use std::sync::Arc;
 use swf::ColorTransform;
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -90,7 +89,7 @@ pub struct EditTextData<'gc> {
     base: InteractiveObjectBase<'gc>,
 
     /// Data shared among all instances of this `EditText`.
-    shared: Gc<'gc, EditTextShared>,
+    shared: Gc<'gc, EditTextShared<'gc>>,
 
     /// The AVM1 object handle
     object: Lock<Option<AvmObject<'gc>>>,
@@ -260,10 +259,10 @@ impl<'gc> EditText<'gc> {
     /// Creates a new `EditText` from an SWF `DefineEditText` tag.
     pub fn from_swf_tag(
         context: &mut UpdateContext<'gc>,
-        swf_movie: Arc<SwfMovie>,
+        swf_movie: SwfMovie<'gc>,
         swf_tag: swf::EditText,
     ) -> Self {
-        let default_format = TextFormat::from_swf_tag(swf_tag.clone(), swf_movie.clone(), context);
+        let default_format = TextFormat::from_swf_tag(swf_tag.clone(), swf_movie, context);
         let encoding = swf_movie.encoding();
         let text = swf_tag.initial_text().unwrap_or_default().decode(encoding);
 
@@ -362,7 +361,7 @@ impl<'gc> EditText<'gc> {
     /// Create a new, dynamic `EditText`.
     pub fn new(
         context: &mut UpdateContext<'gc>,
-        swf_movie: Arc<SwfMovie>,
+        swf_movie: SwfMovie<'gc>,
         x: f64,
         y: f64,
         width: f64,
@@ -397,7 +396,7 @@ impl<'gc> EditText<'gc> {
     /// Create a new, dynamic `EditText` representing an AVM2 TextLine.
     pub fn new_fte(
         context: &mut UpdateContext<'gc>,
-        swf_movie: Arc<SwfMovie>,
+        swf_movie: SwfMovie<'gc>,
         x: f64,
         y: f64,
         width: f64,
@@ -467,7 +466,7 @@ impl<'gc> EditText<'gc> {
                 return html;
             }
 
-            self.0.text_spans.borrow().to_html()
+            self.0.text_spans.borrow().to_html(self.swf_version())
         } else {
             // Non-HTML text fields always return plain text.
             self.text()
@@ -870,7 +869,7 @@ impl<'gc> EditText<'gc> {
     pub fn relayout(self, context: &mut dyn LayoutContext<'gc>) {
         let autosize = self.0.autosize.get();
         let is_word_wrap = self.0.flags.get().contains(EditTextFlag::WORD_WRAP);
-        let movie = self.0.shared.swf.clone();
+        let movie = self.0.shared.swf;
         let padding = Self::GUTTER * 2;
 
         let mut text_spans = self.0.text_spans.borrow_mut();
@@ -889,15 +888,14 @@ impl<'gc> EditText<'gc> {
             None
         };
 
-        let new_layout = html::lower_from_text_spans(
-            &text_spans,
-            context,
+        let layout_params = html::LayoutParams {
             movie,
-            content_width,
-            !self.0.flags.get().contains(EditTextFlag::READ_ONLY),
+            is_input: !self.0.flags.get().contains(EditTextFlag::READ_ONLY),
             is_word_wrap,
-            self.0.font_type(),
-        );
+            font_type: self.0.font_type(),
+        };
+        let new_layout =
+            html::lower_from_text_spans(&text_spans, context, layout_params, content_width);
         drop(text_spans);
 
         unlock!(Gc::write(context.gc(), self.0), EditTextData, layout).replace(new_layout);
@@ -1285,6 +1283,7 @@ impl<'gc> EditText<'gc> {
                                 matrix: transform.matrix,
                                 color_transform: ColorTransform::IDENTITY,
                                 perspective_projection: transform.perspective_projection,
+                                tz: transform.tz,
                             });
                         } else {
                             context.transform_stack.push(transform);
@@ -2094,29 +2093,20 @@ impl<'gc> EditText<'gc> {
         self.on_changed(&mut activation);
     }
 
-    fn initialize_as_broadcaster(self, activation: &mut Avm1Activation<'_, 'gc>) {
-        if let Some(object) = self.object1() {
-            activation
-                .context
-                .avm1
-                .broadcaster_functions(activation.swf_version())
-                .initialize(
-                    &activation.context.strings,
-                    object,
-                    activation.prototypes().array,
-                );
+    fn initialize_listeners(self, activation: &mut Avm1Activation<'_, 'gc>) {
+        let Some(object) = self.object1() else {
+            return;
+        };
 
-            if let Ok(Avm1Value::Object(listeners)) = object.get(istr!("_listeners"), activation) {
-                let length = listeners.length(activation);
-                if matches!(length, Ok(0)) {
-                    // Add the TextField as its own listener to match Flash's behavior
-                    // This makes it so that the TextField's handlers are called before other listeners'.
-                    listeners.set_element(activation, 0, object.into()).unwrap();
-                } else {
-                    tracing::warn!("_listeners should be empty");
-                }
-            }
-        }
+        // Set the TextField as its own listener to match Flash's behavior.
+        // This makes it so that the TextField's handlers are called before other listeners'.
+        let listeners = ArrayBuilder::new(activation).with([object.into()]);
+        object.define_value(
+            activation.gc(),
+            istr!("_listeners"),
+            listeners.into(),
+            Attribute::DONT_ENUM | Attribute::DONT_DELETE,
+        );
     }
 
     fn on_changed(self, activation: &mut Avm1Activation<'_, 'gc>) {
@@ -2165,7 +2155,7 @@ impl<'gc> EditText<'gc> {
             let id = ActivationIdentifier::root("[Construct]");
             let mut activation = Avm1Activation::from_nothing(context, id, self.into());
             let constr = activation.resolve_class([istr!("TextField")]);
-            let proto = constr.and_then(|c| c.prototype(&mut activation));
+            let proto = constr.and_then(|c| c.prototype(&activation));
             let native = Avm1NativeObject::EditText(self);
             let object = Avm1Object::new_with_native(activation.strings(), proto, native);
 
@@ -2185,7 +2175,7 @@ impl<'gc> EditText<'gc> {
             // People can bind to properties of TextFields the same as other display objects.
             Avm1TextFieldBinding::bind_variables(activation);
 
-            self.initialize_as_broadcaster(activation);
+            self.initialize_listeners(activation);
         });
     }
 
@@ -2565,8 +2555,8 @@ impl<'gc> TDisplayObject<'gc> for EditText<'gc> {
         self.0.shared.id
     }
 
-    fn movie(self) -> Arc<SwfMovie> {
-        self.0.shared.swf.clone()
+    fn movie(self) -> SwfMovie<'gc> {
+        self.0.shared.swf
     }
 
     /// Construct objects placed on this frame.
@@ -3221,10 +3211,12 @@ bitflags::bitflags! {
 
 /// Data shared between all instances of a text object.
 #[derive(Debug, Clone, Collect)]
-#[collect(require_static)]
-struct EditTextShared {
-    swf: Arc<SwfMovie>,
+#[collect(no_drop)]
+struct EditTextShared<'gc> {
+    swf: SwfMovie<'gc>,
     id: CharacterId,
+
+    #[collect(require_static)]
     initial_text: Option<WString>,
 }
 

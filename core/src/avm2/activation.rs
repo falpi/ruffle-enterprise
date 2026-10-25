@@ -30,7 +30,6 @@ use crate::tag_utils::SwfMovie;
 use gc_arena::Gc;
 use ruffle_macros::istr;
 use std::cell::Cell;
-use std::sync::Arc;
 use swf::avm2::types::MethodFlags as AbcMethodFlags;
 
 /// Represents a single activation of a given AVM2 function or keyframe.
@@ -56,7 +55,7 @@ pub struct Activation<'a, 'gc: 'a> {
     /// The movie that called this builtin method.
     /// This is intended to be used only for builtin methods- if this activation's method
     /// is a bytecode method, the movie will instead be the movie that the bytecode method came from.
-    caller_movie: Option<Arc<SwfMovie>>,
+    caller_movie: Option<SwfMovie<'gc>>,
 
     /// The superclass of the class that yielded the currently executing method.
     ///
@@ -150,7 +149,7 @@ impl<'a, 'gc> Activation<'a, 'gc> {
     /// don't have a particular scope to run it in. For example, this is
     /// used to run frame scripts for AVM2 movies.
     ///
-    /// The 'Domain' should come from the SwfMovie associated with whatever
+    /// The 'Domain' should come from the `SwfMovie` associated with whatever
     /// action you're performing. When running frame scripts, this is the
     /// `SwfMovie` associated with the `MovieClip` being processed.
     pub fn from_domain(context: &'a mut UpdateContext<'gc>, domain: Domain<'gc>) -> Self {
@@ -418,7 +417,7 @@ impl<'a, 'gc> Activation<'a, 'gc> {
         stack_frame: StackFrame<'a, 'gc>,
         bound_superclass_object: Option<ClassObject<'gc>>,
         caller_domain: Option<Domain<'gc>>,
-        caller_movie: Option<Arc<SwfMovie>>,
+        caller_movie: Option<SwfMovie<'gc>>,
         caller_dxns: Option<AvmString<'gc>>,
     ) -> Result<(), Error<'gc>> {
         self.outer = outer;
@@ -501,14 +500,14 @@ impl<'a, 'gc> Activation<'a, 'gc> {
 
     /// Returns the movie of the original AS3 caller. This will be `None`
     /// if this activation was constructed with `from_nothing`
-    pub fn caller_movie(&self) -> Option<Arc<SwfMovie>> {
-        self.caller_movie.clone()
+    pub fn caller_movie(&self) -> Option<SwfMovie<'gc>> {
+        self.caller_movie
     }
 
     /// Like `caller_movie()`, but returns the root movie if `caller_movie`
     /// is `None`. This matches what FP does in most cases.
-    pub fn caller_movie_or_root(&self) -> Arc<SwfMovie> {
-        self.caller_movie().unwrap_or(self.context.root_swf.clone())
+    pub fn caller_movie_or_root(&self) -> SwfMovie<'gc> {
+        self.caller_movie().unwrap_or(*self.context.root_swf)
     }
 
     /// Returns the global scope of this activation.
@@ -1253,12 +1252,41 @@ impl<'a, 'gc> Activation<'a, 'gc> {
                 }
                 Value::Object(name_object) => {
                     if let Some(dictionary) = object.as_dictionary_object() {
-                        let _ = self.pop_stack();
-                        let _ = self.pop_stack();
-                        let value = dictionary.get_property_by_object(name_object);
-                        self.push_stack(value);
+                        // In JIT mode, indexing into a dictionary with a QName
+                        // results in the QName being parsed into a Multiname as
+                        // usual, as it would be in `get_property_slow`. For
+                        // example, the following code:
+                        //
+                        // ```
+                        // var dict:Dictionary = new Dictionary();
+                        // dict[new QName("", "hello")] = "value";
+                        // trace(dict["hello"]);
+                        // for (var key in dict) {
+                        //     trace(getQualifiedClassName(key));
+                        // }
+                        // ```
+                        // traces "value", "String".
+                        //
+                        // This behavior only appears in JIT mode, not in
+                        // interpreter mode. It seems that avmplus intended for
+                        // the JIT mode behavior to be the "expected" behavior,
+                        // as it asserts in Dictionary code that QNames never
+                        // get processed as Dictionary keys. However, this
+                        // assert is skipped in non-debug builds of avmplus,
+                        // which makes it possible to insert a QName into a
+                        // Dictionary in interpreter mode.
 
-                        return Ok(());
+                        let disable_fast_path =
+                            !self.is_interpreter() && name_object.as_qname_object().is_some();
+
+                        if !disable_fast_path {
+                            let _ = self.pop_stack();
+                            let _ = self.pop_stack();
+                            let value = dictionary.get_property_by_object(name_object);
+                            self.push_stack(value);
+
+                            return Ok(());
+                        }
                     }
                 }
                 _ => {}
@@ -1328,12 +1356,19 @@ impl<'a, 'gc> Activation<'a, 'gc> {
                 }
                 Value::Object(name_object) => {
                     if let Some(dictionary) = object.as_dictionary_object() {
-                        let _ = self.pop_stack();
-                        let _ = self.pop_stack();
-                        let _ = self.pop_stack();
-                        dictionary.set_property_by_object(name_object, value, self.gc());
+                        // See comment in `Activation::op_get_property_fast`
 
-                        return Ok(());
+                        let disable_fast_path =
+                            !self.is_interpreter() && name_object.as_qname_object().is_some();
+
+                        if !disable_fast_path {
+                            let _ = self.pop_stack();
+                            let _ = self.pop_stack();
+                            let _ = self.pop_stack();
+                            dictionary.set_property_by_object(name_object, value, self.gc());
+
+                            return Ok(());
+                        }
                     }
                 }
                 _ => {}
@@ -2767,7 +2802,7 @@ impl<'a, 'gc> Activation<'a, 'gc> {
             return Err(make_error_1506(self));
         }
         dm.write_at_nongrowing(&val.to_le_bytes(), address)
-            .map_err(|e| e.to_avm(self))?;
+            .expect("Already performed bounds check");
 
         Ok(())
     }
@@ -2786,7 +2821,7 @@ impl<'a, 'gc> Activation<'a, 'gc> {
             return Err(make_error_1506(self));
         }
         dm.write_at_nongrowing(&val.to_le_bytes(), address)
-            .map_err(|e| e.to_avm(self))?;
+            .expect("Already performed bounds check");
 
         Ok(())
     }
@@ -2805,7 +2840,7 @@ impl<'a, 'gc> Activation<'a, 'gc> {
             return Err(make_error_1506(self));
         }
         dm.write_at_nongrowing(&val.to_le_bytes(), address)
-            .map_err(|e| e.to_avm(self))?;
+            .expect("Already performed bounds check");
 
         Ok(())
     }
@@ -2824,7 +2859,7 @@ impl<'a, 'gc> Activation<'a, 'gc> {
             return Err(make_error_1506(self));
         }
         dm.write_at_nongrowing(&val.to_le_bytes(), address)
-            .map_err(|e| e.to_avm(self))?;
+            .expect("Already performed bounds check");
 
         Ok(())
     }
@@ -2862,7 +2897,9 @@ impl<'a, 'gc> Activation<'a, 'gc> {
             return Err(make_error_1506(self));
         }
 
-        let val = dm.read_at(2, address).map_err(|e| e.to_avm(self))?;
+        let val = dm
+            .read_at(2, address)
+            .expect("Already performed bounds check");
         self.push_stack(u16::from_le_bytes(val.try_into().unwrap()));
 
         Ok(())
@@ -2881,7 +2918,9 @@ impl<'a, 'gc> Activation<'a, 'gc> {
             return Err(make_error_1506(self));
         }
 
-        let val = dm.read_at(4, address).map_err(|e| e.to_avm(self))?;
+        let val = dm
+            .read_at(4, address)
+            .expect("Already performed bounds check");
         self.push_stack(i32::from_le_bytes(val.try_into().unwrap()));
         Ok(())
     }
@@ -2899,7 +2938,9 @@ impl<'a, 'gc> Activation<'a, 'gc> {
             return Err(make_error_1506(self));
         }
 
-        let val = dm.read_at(4, address).map_err(|e| e.to_avm(self))?;
+        let val = dm
+            .read_at(4, address)
+            .expect("Already performed bounds check");
         self.push_stack(f32::from_le_bytes(val.try_into().unwrap()));
 
         Ok(())
@@ -2918,7 +2959,9 @@ impl<'a, 'gc> Activation<'a, 'gc> {
             return Err(make_error_1506(self));
         }
 
-        let val = dm.read_at(8, address).map_err(|e| e.to_avm(self))?;
+        let val = dm
+            .read_at(8, address)
+            .expect("Already performed bounds check");
         self.push_stack(f64::from_le_bytes(val.try_into().unwrap()));
         Ok(())
     }
