@@ -84,11 +84,9 @@ $ErrorActionPreference = 'Stop'
 $SnapshotBranches = @(
     'fix-memory-leaks',
     'fix-blurry-grid-separators',
-    'fix-mouse-events-clipping',
     'fix-mouse-hover-on-mx-buttons',
     'fix-mouse-click-release-outside-buttons',
     'fix-bitmapdata-filter-expansion',
-    'fix-collator-compare-normalization',
     'fix-arcgis-flex-sdk-too-much-recursion',
     'fix-electron-instantiate-streaming',
     'add-text-input-event-dispatch',
